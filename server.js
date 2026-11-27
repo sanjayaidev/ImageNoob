@@ -40,6 +40,8 @@ const MODELS = [
   { id: 'flux-1.1-pro-ultra', label: 'Flux 1.1 Pro Ultra (create only)', canEdit: false },
   { id: 'flux-schnell', label: 'Flux Schnell (fast, create only)', canEdit: false },
   { id: 'recraft-v3', label: 'Recraft v3 (create only)', canEdit: false },
+  // Inpainting-only: it can only repaint an area you painted, so it is not offered in Create.
+  { id: 'stability-ai/stable-diffusion-inpainting', label: 'Stable Diffusion Inpainting (paint the area)', canEdit: true, canCreate: false, needsMask: true },
 ];
 const ASPECTS = ['1:1', '16:9', '9:16', '4:3', '3:4'];
 const FORMATS = ['png', 'jpeg', 'webp'];
@@ -130,7 +132,7 @@ function friendlyError(err) {
 
 // ---------- Talking to Transloadit ----------
 
-async function runAssembly(steps, imagePath) {
+async function runAssembly(steps, files) {
   if (!isConfigured()) {
     throw new UserError('Add your Transloadit keys first (see the box at the top of the page).', 401);
   }
@@ -143,7 +145,7 @@ async function runAssembly(steps, imagePath) {
   try {
     assembly = await client.createAssembly({
       params: { steps },
-      files: imagePath ? { image: imagePath } : undefined,
+      files,
       waitForCompletion: true,
       timeout: 5 * 60 * 1000,
     });
@@ -224,7 +226,8 @@ app.post('/api/setup', (req, res) => {
 
 app.post('/api/generate', wrap(async (req, res) => {
   const prompt = cleanPrompt(req.body?.prompt);
-  const model = pick(req.body?.model, MODELS.map((m) => m.id), MODELS[0].id, 'model');
+  const createModels = MODELS.filter((m) => m.canCreate !== false).map((m) => m.id);
+  const model = pick(req.body?.model, createModels, createModels[0], 'model');
   const aspect = pick(req.body?.aspectRatio, ASPECTS, '1:1', 'shape');
   const format = pick(req.body?.format, FORMATS, 'png', 'format');
 
@@ -243,9 +246,10 @@ app.post('/api/generate', wrap(async (req, res) => {
 }));
 
 app.post('/api/edit', wrap(async (req, res) => {
-  const prompt = cleanPrompt(req.body?.prompt);
-  const editModels = MODELS.filter((m) => m.canEdit).map((m) => m.id);
-  const model = pick(req.body?.model, editModels, editModels[0], 'model');
+  let prompt = cleanPrompt(req.body?.prompt);
+  const editModels = MODELS.filter((m) => m.canEdit);
+  const model = pick(req.body?.model, editModels.map((m) => m.id), editModels[0].id, 'model');
+  const modelInfo = MODELS.find((m) => m.id === model);
   const format = pick(req.body?.format, FORMATS, 'png', 'format');
 
   const match = /^data:image\/(png|jpeg|webp);base64,([A-Za-z0-9+/=]+)$/.exec(req.body?.image || '');
@@ -253,16 +257,40 @@ app.post('/api/edit', wrap(async (req, res) => {
   const bytes = Buffer.from(match[2], 'base64');
   if (bytes.length > 15 * 1024 * 1024) throw new UserError('That image is too big. Please use one under 15 MB.');
 
+  // Optional "painted area": a black-and-white PNG, white = change this part.
+  let maskBytes = null;
+  if (req.body?.mask) {
+    const m = /^data:image\/png;base64,([A-Za-z0-9+/=]+)$/.exec(req.body.mask);
+    if (!m) throw new UserError('The painted area could not be read. Please paint it again.');
+    maskBytes = Buffer.from(m[1], 'base64');
+    if (maskBytes.length > 15 * 1024 * 1024) throw new UserError('The painted area is too big.');
+  }
+  if (modelInfo.needsMask && !maskBytes) {
+    throw new UserError('This picture maker only changes a painted area. Paint over the part you want changed first.');
+  }
+  // Transloadit recommends telling the model that everything else should stay as it is.
+  if (maskBytes && !/unchanged|keep the rest/i.test(prompt)) {
+    prompt += ' Keep the rest of the image unchanged.';
+  }
+
   const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'studio-'));
   const tmpFile = path.join(tmpDir, `source.${match[1] === 'jpeg' ? 'jpg' : match[1]}`);
+  const maskFile = path.join(tmpDir, 'mask.png');
   try {
     await fsp.writeFile(tmpFile, bytes);
+    const files = { image: tmpFile };
+    const use = [{ as: 'image', fields: 'image', name: ':original' }];
+    if (maskBytes) {
+      await fsp.writeFile(maskFile, maskBytes);
+      files.mask = maskFile;
+      use.push({ as: 'mask', fields: 'mask', name: ':original' });
+    }
     const out = await runAssembly(
       {
         ':original': { robot: '/upload/handle' },
         result: {
           robot: '/image/generate',
-          use: [{ as: 'image', fields: 'image', name: ':original' }],
+          use,
           result: true,
           interpolate: { prompt: false }, // treat the prompt as plain text
           prompt,
@@ -270,11 +298,11 @@ app.post('/api/edit', wrap(async (req, res) => {
           format,
         },
       },
-      tmpFile,
+      files,
     );
     res.json(await saveResult(out, { type: 'edit', prompt, model, format }));
   } finally {
-    fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+    await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
   }
 }));
 

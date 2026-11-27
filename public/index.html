@@ -79,6 +79,16 @@
   .drop img { max-width: 100%; max-height: 260px; border-radius: 8px; display: block; margin: 0 auto 10px; }
   .drop strong { color: var(--ink); }
 
+  /* Painter */
+  .painter { text-align: center; }
+  .stage { position: relative; display: inline-block; max-width: 100%; line-height: 0; touch-action: none; }
+  .stage img { display: block; max-width: 100%; max-height: 440px; border-radius: 8px; }
+  .stage canvas { position: absolute; inset: 0; width: 100%; height: 100%; border-radius: 8px; cursor: crosshair; opacity: .6; }
+  .tools { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 8px; margin-top: 12px; line-height: 1.2; }
+  .tools .toggle[aria-pressed=true] { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
+  .tools label { display: inline-flex; align-items: center; gap: 8px; margin: 0; font-weight: 500; color: var(--muted); }
+  .tools input[type=range] { width: 110px; }
+
   details { margin: 4px 0 18px; }
   summary { cursor: pointer; color: var(--muted); font-size: 14px; }
   details .field { margin-top: 12px; }
@@ -149,10 +159,24 @@
     <div id="editBox" class="field hidden">
       <label>1. Choose the picture you want to change</label>
       <div id="drop" class="drop" tabindex="0" role="button" aria-label="Choose a picture to edit">
-        <div id="dropEmpty"><strong>Click to choose</strong> or drag a picture here<br><span class="hint">PNG, JPG or WebP</span></div>
-        <div id="dropPreview" class="hidden"><img id="previewImg" alt="Your picture"><span class="hint">Click to choose a different one</span></div>
+        <div><strong>Click to choose</strong> or drag a picture here<br><span class="hint">PNG, JPG or WebP</span></div>
       </div>
       <input id="file" type="file" accept="image/png,image/jpeg,image/webp" class="hidden">
+
+      <div id="painter" class="painter hidden">
+        <div class="stage">
+          <img id="previewImg" alt="Your picture" draggable="false">
+          <canvas id="overlay" aria-label="Paint over the part you want to change"></canvas>
+        </div>
+        <div class="tools">
+          <button type="button" class="small toggle" id="toolPaint" aria-pressed="true">🖌 Paint</button>
+          <button type="button" class="small toggle" id="toolErase" aria-pressed="false">⌫ Erase</button>
+          <label>Size <input type="range" id="brushSize" min="8" max="120" value="40"></label>
+          <button type="button" class="small" id="clearPaint">Clear paint</button>
+          <button type="button" class="small" id="changePic">Choose another picture</button>
+        </div>
+        <p class="hint" id="paintHint">Optional: paint over the part you want changed and leave the rest alone. Skip this to let the AI edit the whole picture.</p>
+      </div>
     </div>
 
     <div class="field">
@@ -169,7 +193,9 @@
     <details>
       <summary>More options</summary>
       <div class="row">
-        <div class="field"><label for="model">Picture maker</label><select id="model"></select></div>
+        <div class="field"><label for="model">Picture maker</label><select id="model"></select>
+          <p class="hint hidden" id="modelHint">This one only changes the area you paint. Paint over it in the picture above.</p>
+        </div>
         <div class="field"><label for="format">File type</label>
           <select id="format">
             <option value="png">PNG (best quality)</option>
@@ -203,7 +229,7 @@
 
 <script>
 const $ = (s) => document.querySelector(s);
-const state = { mode: 'create', aspect: '1:1', image: null, models: [], aspects: [], lastResult: null };
+const state = { mode: 'create', aspect: '1:1', image: null, painted: false, models: [], aspects: [], lastResult: null };
 
 const IDEAS = {
   create: [
@@ -286,10 +312,18 @@ function renderShapes() {
 }
 function renderModels() {
   const sel = $('#model');
-  const list = state.mode === 'edit' ? state.models.filter((m) => m.canEdit) : state.models;
+  const list = state.mode === 'edit'
+    ? state.models.filter((m) => m.canEdit)
+    : state.models.filter((m) => m.canCreate !== false);
   sel.innerHTML = '';
   for (const m of list) sel.add(new Option(m.label, m.id));
+  updateModelHint();
 }
+function updateModelHint() {
+  const m = state.models.find((x) => x.id === $('#model').value);
+  $('#modelHint').classList.toggle('hidden', !(state.mode === 'edit' && m && m.needsMask));
+}
+$('#model').addEventListener('change', updateModelHint);
 function setMode(mode) {
   state.mode = mode;
   $('#tab-create').setAttribute('aria-selected', String(mode === 'create'));
@@ -314,7 +348,92 @@ drop.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' '
 drop.addEventListener('dragover', (e) => { e.preventDefault(); drop.classList.add('over'); });
 drop.addEventListener('dragleave', () => drop.classList.remove('over'));
 drop.addEventListener('drop', (e) => { e.preventDefault(); drop.classList.remove('over'); if (e.dataTransfer.files[0]) loadFile(e.dataTransfer.files[0]); });
-fileInput.addEventListener('change', () => { if (fileInput.files[0]) loadFile(fileInput.files[0]); });
+fileInput.addEventListener('change', () => {
+  if (fileInput.files[0]) loadFile(fileInput.files[0]);
+  fileInput.value = ''; // lets you pick the same file again later
+});
+
+/* ---------- Paint the area to change ---------- */
+// "mask" is a hidden black canvas; white strokes mark what the AI may change.
+// "overlay" is the red paint you see on top of the picture.
+const paint = { mask: document.createElement('canvas'), tool: 'paint', drawing: false, last: null };
+const overlay = $('#overlay');
+
+function initPainter(w, h) {
+  overlay.width = paint.mask.width = w;
+  overlay.height = paint.mask.height = h;
+  clearPaint();
+  $('#drop').classList.add('hidden');
+  $('#painter').classList.remove('hidden');
+}
+function clearPaint() {
+  const m = paint.mask.getContext('2d');
+  m.globalCompositeOperation = 'source-over';
+  m.fillStyle = '#000'; m.fillRect(0, 0, paint.mask.width, paint.mask.height);
+  overlay.getContext('2d').clearRect(0, 0, overlay.width, overlay.height);
+  state.painted = false;
+}
+function pointOf(e) {
+  const r = overlay.getBoundingClientRect();
+  return { x: (e.clientX - r.left) * overlay.width / r.width, y: (e.clientY - r.top) * overlay.height / r.height };
+}
+function stroke(from, to) {
+  const r = overlay.getBoundingClientRect();
+  const lineWidth = Number($('#brushSize').value) * overlay.width / r.width;
+  const erase = paint.tool === 'erase';
+  const targets = [
+    [paint.mask.getContext('2d'), erase ? '#000' : '#fff', 'source-over'],
+    [overlay.getContext('2d'), 'rgb(255,60,90)', erase ? 'destination-out' : 'source-over'],
+  ];
+  for (const [ctx, color, op] of targets) {
+    ctx.globalCompositeOperation = op;
+    ctx.strokeStyle = color; ctx.lineWidth = lineWidth; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+    ctx.beginPath(); ctx.moveTo(from.x, from.y); ctx.lineTo(to.x, to.y); ctx.stroke();
+  }
+  if (!erase) state.painted = true;
+}
+overlay.addEventListener('pointerdown', (e) => {
+  overlay.setPointerCapture(e.pointerId);
+  paint.drawing = true; paint.last = pointOf(e); stroke(paint.last, paint.last);
+});
+overlay.addEventListener('pointermove', (e) => {
+  if (!paint.drawing) return;
+  const p = pointOf(e); stroke(paint.last, p); paint.last = p;
+});
+['pointerup', 'pointercancel'].forEach((t) => overlay.addEventListener(t, () => { paint.drawing = false; }));
+
+function setTool(tool) {
+  paint.tool = tool;
+  $('#toolPaint').setAttribute('aria-pressed', String(tool === 'paint'));
+  $('#toolErase').setAttribute('aria-pressed', String(tool === 'erase'));
+}
+$('#toolPaint').addEventListener('click', () => setTool('paint'));
+$('#toolErase').addEventListener('click', () => setTool('erase'));
+$('#clearPaint').addEventListener('click', clearPaint);
+$('#changePic').addEventListener('click', () => fileInput.click());
+
+const loadImage = (src) => new Promise((resolve, reject) => {
+  const i = new Image(); i.onload = () => resolve(i); i.onerror = reject; i.src = src;
+});
+const newCanvas = (w, h) => Object.assign(document.createElement('canvas'), { width: w, height: h });
+
+// Works out what to send: the picture and, if you painted, the black-and-white mask.
+async function buildEditPayload(modelId) {
+  let image = state.image;
+  let mask = state.painted ? paint.mask.toDataURL('image/png') : null;
+  if (mask && modelId.startsWith('stability-ai/')) {
+    // This model needs both sides to be multiples of 64 and at most 1024 pixels.
+    const src = await loadImage(state.image);
+    const scale = Math.min(1, 1024 / Math.max(src.width, src.height));
+    const fit = (n) => Math.min(1024, Math.max(64, Math.round((n * scale) / 64) * 64));
+    const w = fit(src.width), h = fit(src.height);
+    const a = newCanvas(w, h); a.getContext('2d').drawImage(src, 0, 0, w, h);
+    const b = newCanvas(w, h); b.getContext('2d').drawImage(paint.mask, 0, 0, w, h);
+    image = a.toDataURL('image/png');
+    mask = b.toDataURL('image/png');
+  }
+  return { image, mask };
+}
 
 function loadFile(file) {
   if (!/^image\/(png|jpeg|webp)$/.test(file.type)) { setStatus('Please choose a PNG, JPG or WebP picture.', 'error'); return; }
@@ -329,8 +448,7 @@ function loadFile(file) {
     const type = file.type === 'image/png' ? 'image/png' : file.type === 'image/webp' ? 'image/webp' : 'image/jpeg';
     state.image = c.toDataURL(type, 0.92);
     $('#previewImg').src = state.image;
-    $('#dropEmpty').classList.add('hidden');
-    $('#dropPreview').classList.remove('hidden');
+    initPainter(c.width, c.height);
     URL.revokeObjectURL(url);
     setStatus('');
   };
@@ -344,6 +462,11 @@ $('#go').addEventListener('click', async () => {
   const prompt = $('#prompt').value.trim();
   if (state.mode === 'edit' && !state.image) { setStatus('Choose a picture to edit first.', 'error'); return; }
   if (!prompt) { setStatus('Type a description first.', 'error'); $('#prompt').focus(); return; }
+  const chosen = state.models.find((m) => m.id === $('#model').value);
+  if (state.mode === 'edit' && chosen && chosen.needsMask && !state.painted) {
+    setStatus('This picture maker only changes a painted area. Paint over the part you want changed first.', 'error');
+    return;
+  }
 
   const btn = $('#go');
   btn.disabled = true;
@@ -354,7 +477,7 @@ $('#go').addEventListener('click', async () => {
   try {
     const body = { prompt, model: $('#model').value, format: $('#format').value };
     const result = state.mode === 'edit'
-      ? await post('/api/edit', { ...body, image: state.image })
+      ? await post('/api/edit', { ...body, ...(await buildEditPayload(body.model)) })
       : await post('/api/generate', { ...body, aspectRatio: state.aspect });
     showResult(result);
     setStatus('Done! Scroll down to see it.', '');

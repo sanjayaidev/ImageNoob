@@ -22,6 +22,8 @@ Free account at https://transloadit.com → Dashboard → **Credentials** (Auth 
 
 - **Create a new picture**: type what you want, pick a shape, press the button.
 - **Edit my picture**: upload a photo, type what should change ("make the sky a sunset"), press the button.
+  - **Optional: paint the part to change.** After uploading, paint over the area with the brush (red = "change this"). Everything you don't paint is meant to stay the same. Use *Erase* or *Clear paint* to fix mistakes. Leave it unpainted to let the AI edit the whole picture.
+  - *Stable Diffusion Inpainting* (under *More options*) only works with a painted area. The app automatically resizes your picture for it (up to 1024 px, sides in steps of 64).
 - Every picture is saved in the `outputs` folder and shown under "Your pictures".
 - On a finished picture, press **Edit this picture** to keep refining it.
 
