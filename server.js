@@ -32,7 +32,7 @@ const MODELS = [
   { id: 'google/nano-banana', label: 'Nano Banana (default)', canEdit: true },
   { id: 'google/nano-banana-2', label: 'Nano Banana 2 (newer)', canEdit: true },
   { id: 'google/nano-banana-pro', label: 'Nano Banana Pro (best quality)', canEdit: true },
-  { id: 'flux-schnell', label: 'Flux Schnell (fast, create only)', canEdit: false },
+  { id: 'openai/gpt-image-2', label: 'GPT Image 2 (OpenAI)', canEdit: true },
 ];
 const ASPECTS = ['1:1', '16:9', '9:16', '4:3', '3:4'];
 const FORMATS = ['png', 'jpeg', 'webp'];
