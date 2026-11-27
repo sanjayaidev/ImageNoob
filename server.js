@@ -82,8 +82,18 @@ function cleanPrompt(value) {
   }
   const text = value.trim();
   if (text.length > 2000) throw new UserError('That description is too long. Please keep it under 2000 characters.');
-  // "${...}" would be read by Transloadit as a variable, so we defuse it.
-  return text.replaceAll('${', '$ {');
+  return text;
+}
+
+// Google models can return JPEG bytes even when PNG was requested, so we
+// look at the file's first bytes instead of trusting the requested format.
+function sniffExtension(buf, fallback) {
+  if (buf.length > 12) {
+    if (buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47) return 'png';
+    if (buf[0] === 0xff && buf[1] === 0xd8) return 'jpg';
+    if (buf.toString('ascii', 0, 4) === 'RIFF' && buf.toString('ascii', 8, 12) === 'WEBP') return 'webp';
+  }
+  return fallback === 'jpeg' ? 'jpg' : fallback || 'png';
 }
 
 function pick(value, allowed, fallback, label) {
@@ -152,7 +162,7 @@ async function saveResult(out, { type, prompt, model, format }) {
   if (!res.ok) throw new UserError('The image was made but could not be downloaded.', 502);
   const buffer = Buffer.from(await res.arrayBuffer());
 
-  const ext = (out.ext || format || 'png').replace('jpeg', 'jpg');
+  const ext = sniffExtension(buffer, out.ext || format);
   const id = Date.now().toString(36) + crypto.randomBytes(3).toString('hex');
   const file = `${id}.${ext}`;
   await fsp.writeFile(path.join(OUTPUT_DIR, file), buffer);
@@ -215,6 +225,7 @@ app.post('/api/generate', wrap(async (req, res) => {
     result: {
       robot: '/image/generate',
       result: true,
+      interpolate: { prompt: false }, // treat the prompt as plain text
       prompt,
       model,
       format,
@@ -244,8 +255,9 @@ app.post('/api/edit', wrap(async (req, res) => {
         ':original': { robot: '/upload/handle' },
         result: {
           robot: '/image/generate',
-          use: [{ as: 'image', name: ':original' }],
+          use: [{ as: 'image', fields: 'image', name: ':original' }],
           result: true,
+          interpolate: { prompt: false }, // treat the prompt as plain text
           prompt,
           model,
           format,
