@@ -33,6 +33,13 @@ const MODELS = [
   { id: 'google/nano-banana-2', label: 'Nano Banana 2 (newer)', canEdit: true },
   { id: 'google/nano-banana-pro', label: 'Nano Banana Pro (best quality)', canEdit: true },
   { id: 'openai/gpt-image-2', label: 'GPT Image 2 (OpenAI)', canEdit: true },
+  { id: 'openai/gpt-image-2.5-flare', label: 'GPT Image 2.5 Flare (OpenAI)', canEdit: true },
+  { id: 'openai/gpt-image-2.5-sunburst', label: 'GPT Image 2.5 Sunburst (OpenAI)', canEdit: true },
+  { id: 'openai/gpt-image-2.6-flare', label: 'GPT Image 2.6 Flare (OpenAI)', canEdit: true },
+  { id: 'openai/gpt-image-2.6-sunburst', label: 'GPT Image 2.6 Sunburst (OpenAI)', canEdit: true },
+  { id: 'flux-1.1-pro-ultra', label: 'Flux 1.1 Pro Ultra (create only)', canEdit: false },
+  { id: 'flux-schnell', label: 'Flux Schnell (fast, create only)', canEdit: false },
+  { id: 'recraft-v3', label: 'Recraft v3 (create only)', canEdit: false },
 ];
 const ASPECTS = ['1:1', '16:9', '9:16', '4:3', '3:4'];
 const FORMATS = ['png', 'jpeg', 'webp'];
